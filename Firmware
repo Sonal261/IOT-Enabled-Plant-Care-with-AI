@@ -1,0 +1,121 @@
+#include <ESP8266WiFi.h>
+#include <ESP8266HTTPClient.h>
+#include <WiFiClientSecureBearSSL.h>
+#include <NTPClient.h>
+#include <WiFiUdp.h>
+#include "DHT.h"
+#include <time.h>
+
+// ---------- Wi-Fi credentials ----------
+const char* ssid = "SSID";//replace
+const char* password = "password";//replace
+
+// ---------- Firebase ----------
+String firebaseURL = "";//add firebase url
+
+// ---------- Sensors ----------
+#define SOIL_PIN A0
+#define DHTPIN D3
+#define DHTTYPE DHT11
+
+DHT dht(DHTPIN, DHTTYPE);
+
+// ---------- Calibration values ----------
+int dryValue = 1023;   // sensor in air
+int wetValue = 300;    // sensor in water
+
+void setup() {
+  Serial.begin(115200);
+  dht.begin();
+
+  WiFi.begin(ssid, password);
+
+  Serial.print("Connecting to WiFi");
+
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+
+  Serial.println("\nConnected to WiFi");
+
+  configTime(19800, 0, "pool.ntp.org");
+
+  Serial.println("Waiting for time sync...");
+
+  time_t now = time(nullptr);
+
+  while (now < 100000) {
+    delay(500);
+    Serial.print(".");
+    now = time(nullptr);
+  }
+
+  Serial.println("\nTime synced!");
+}
+
+void loop() {
+
+  // ---------- Read sensors ----------
+  int rawMoisture = analogRead(SOIL_PIN);
+
+  rawMoisture = constrain(rawMoisture, wetValue, dryValue);
+
+  int moisturePercent = map(rawMoisture, dryValue, wetValue, 0, 100);
+
+  float humidity = dht.readHumidity();
+  float temperature = dht.readTemperature();
+
+  if (isnan(humidity) || isnan(temperature)) {
+    Serial.println("Failed to read from DHT sensor!");
+    delay(2000);
+    return;
+  }
+
+  // ---------- Debug ----------
+  Serial.println("Raw Moisture: " + String(rawMoisture));
+  Serial.println("Moisture %: " + String(moisturePercent));
+  Serial.println("Temperature: " + String(temperature));
+  Serial.println("Humidity: " + String(humidity));
+
+  time_t now = time(nullptr);
+
+  String timestamp = ctime(&now);
+  timestamp.trim();
+
+  unsigned long timestamp_ms = now;
+
+  Serial.println("Epoch:");
+  Serial.println(timestamp_ms);
+
+  // ---------- Firebase ----------
+  if (WiFi.status() == WL_CONNECTED) {
+
+    HTTPClient httpFB;
+
+    WiFiClientSecure secureClient;
+    secureClient.setInsecure();
+
+    httpFB.begin(secureClient, firebaseURL);
+
+    httpFB.addHeader("Content-Type", "application/json");
+
+    String postData = "{";
+    postData += "\"soil_moisture_percent\":" + String(moisturePercent) + ",";
+    postData += "\"temperature\":" + String(temperature) + ",";
+    postData += "\"humidity\":" + String(humidity) + ",";
+    postData += "\"timestamp\":\"" + timestamp + "\",";
+    postData += "\"timestamp_ms\":" + String(timestamp_ms);
+    postData += "}";
+
+    Serial.println(postData);
+
+    int fbCode = httpFB.POST(postData);
+
+    Serial.println("Firebase response: " + String(fbCode));
+
+    httpFB.end();
+  }
+
+  delay(10000);
+}
